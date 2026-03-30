@@ -1,7 +1,10 @@
 <#
 .SYNOPSIS
-    RFC 2544 Fleet Network Performance Test Suite (Self-Contained)
+    RFC 2544 / RFC 6349 Fleet Network Performance Test Suite (Self-Contained)
     Tests all hosts in hosts.txt and generates individual + fleet summary reports.
+
+    Author: Dakota Cole
+    License: MIT
 
 .DESCRIPTION
     Reads hosts.txt from the same directory, runs iperf3/ping/tracert tests against
@@ -45,10 +48,15 @@
 .PARAMETER SingleHost
     Test only one host by name (from hosts.txt). Useful for re-testing a single node.
 
+.PARAMETER Full
+    Run a comprehensive test with aggressive settings: 60s TCP, 8 streams, 2Gbps UDP,
+    30 pings, full UDP + traceroute. One command, everything in one report.
+
 .EXAMPLE
-    .\rfc2544-fleet-standalone.ps1 -Open
-    .\rfc2544-fleet-standalone.ps1 -SiteName "My Network" -Duration 60 -Open
-    .\rfc2544-fleet-standalone.ps1 -SingleHost "Hut-14" -Open
+    .\rfc2544-test.ps1 -Open
+    .\rfc2544-test.ps1 -SiteName "My Network" -Duration 60 -Open
+    .\rfc2544-test.ps1 -SingleHost "Branch-1" -Open
+    .\rfc2544-test.ps1 -Full -SiteName "Production Network" -Open
 #>
 
 param(
@@ -63,8 +71,20 @@ param(
     [switch]$Open,
     [switch]$SkipUDP,
     [switch]$SkipTraceroute,
+    [switch]$Full,
     [string]$SingleHost = ""
 )
+
+# -- Full mode overrides --
+if ($Full) {
+    if ($Duration -eq 30) { $Duration = 60 }
+    if ($Parallel -eq 4) { $Parallel = 8 }
+    if ($UDPMbps -eq 100) { $UDPMbps = 2000 }
+    if ($UDPDuration -eq 15) { $UDPDuration = 20 }
+    if ($PingCount -eq 20) { $PingCount = 30 }
+    $SkipUDP = $false
+    $SkipTraceroute = $false
+}
 
 $ErrorActionPreference = "Continue"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
