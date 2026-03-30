@@ -10,10 +10,11 @@ For each host in your `hosts.txt`:
 
 | Test | What It Measures |
 |------|-----------------|
-| **ICMP Ping** (56 byte + 1400 byte DF) | Latency, jitter, packet loss, MTU path |
+| **ICMP Ping** (56 byte + 1400 byte DF) | Latency, jitter, packet loss |
+| **MTU / Jumbo Frame Discovery** | Path MTU via DF-bit probes (1500 → 9000 bytes) |
 | **TCP Upload** | Multi-stream throughput (client → server) |
 | **TCP Download** | Multi-stream throughput (server → client) |
-| **UDP Profile** | Throughput, jitter, and packet loss at multiple datagram sizes |
+| **UDP Profile** | Throughput, jitter, and packet loss at multiple datagram sizes (+ 8972-byte jumbo if path supports it) |
 | **Traceroute** | Layer 3 path analysis |
 
 ## Quick Start

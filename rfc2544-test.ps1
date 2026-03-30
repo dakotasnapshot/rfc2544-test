@@ -385,11 +385,34 @@ foreach ($h in $hosts) {
         Write-Host "`r  [FAIL] TCP Dn: $($dnSummary.Error)        " -ForegroundColor Red
     }
     
+    # -- Jumbo Frame / MTU Path Discovery --
+    Write-Host "  [..] MTU path discovery..." -NoNewline
+    $mtuResult = @{ JumboCapable = $false; MaxMTU = 1500 }
+    # Test progressively larger ping sizes with DF bit (28 bytes ICMP overhead)
+    $mtuSizes = @(1472, 2000, 4000, 8000, 8972)
+    foreach ($ms in $mtuSizes) {
+        $mtuPing = Test-Connection -ComputerName $hIP -Count 1 -BufferSize $ms -DontFragment -ErrorAction SilentlyContinue
+        if ($mtuPing) {
+            $mtuResult.MaxMTU = $ms + 28  # Add IP+ICMP header
+            if ($ms -ge 8000) { $mtuResult.JumboCapable = $true }
+        } else {
+            break
+        }
+    }
+    $result["MTU"] = $mtuResult
+    if ($mtuResult.JumboCapable) {
+        Write-Host "`r  [OK] Jumbo frames supported! Max MTU: $($mtuResult.MaxMTU)        " -ForegroundColor Green
+    } else {
+        Write-Host "`r  [OK] Max MTU: $($mtuResult.MaxMTU) (standard)        " -ForegroundColor Cyan
+    }
+
     # -- UDP Profile --
     $udpResults = @()
     $udpBest = $null
     if (-not $SkipUDP) {
         $udpLens = @(64, 256, 512, 1024, 1470)
+        # Add jumbo frame UDP test if path supports it
+        if ($mtuResult.JumboCapable) { $udpLens += 8972 }
         foreach ($dlen in $udpLens) {
             Write-Host "  [..] UDP len=$dlen..." -NoNewline
             $udpRun = Run-Iperf3Test -Arguments @("-J", "-u", "-c", $hIP, "-p", "$hPort", "-t", "$UDPDuration", "-b", "${UDPMbps}M", "--len", "$dlen") -Timeout ($UDPDuration + 30) -TmpDir $hostDir
@@ -474,6 +497,12 @@ pre { background: #f7f7f9; padding: 8px; border: 1px solid #eee; font-size: 8pt;
 <tr><td>56 byte</td><td>$($pingSmall.AvgMs) ms</td><td>$($pingSmall.MinMs) ms</td><td>$($pingSmall.MaxMs) ms</td><td>$($pingSmall.LossPercent)%</td><td>$($pingSmall.Count)/$($pingSmall.Sent)</td></tr>
 <tr><td>1400 byte (DF)</td><td>$($pingLarge.AvgMs) ms</td><td>$($pingLarge.MinMs) ms</td><td>$($pingLarge.MaxMs) ms</td><td>$($pingLarge.LossPercent)%</td><td>$($pingLarge.Count)/$($pingLarge.Sent)</td></tr>
 </table>
+<h2>MTU / Jumbo Frame Path</h2>
+<table>
+<tr><th>Test</th><th>Result</th></tr>
+<tr><td>Max MTU (DF bit set)</td><td><strong>$($result['MTU'].MaxMTU) bytes</strong></td></tr>
+<tr><td>Jumbo Frame Capable</td><td>$(if($result['MTU'].JumboCapable){"<span style='color:green;font-weight:bold'>YES - 9000 byte frames supported</span>"}else{"<span style='color:#666'>No - standard 1500 byte MTU</span>"})</td></tr>
+</table>
 $(if($udpResults.Count -gt 0){"<h2>UDP Frame Loss and Jitter</h2><table><tr><th>Datagram</th><th>Throughput</th><th>Jitter</th><th>Lost</th><th>Total</th><th>Loss %</th></tr>$udpRowsHtml</table>"})
 $traceHtml
 <div class="ft">RFC2544 Test Suite RFC 2544 Test Suite -- $reportDate -- $env:COMPUTERNAME</div>
@@ -502,6 +531,8 @@ $traceHtml
         UdpBest = if ($udpBest) { $udpBest.Mbps } else { $null }
         UdpJitter = if ($udpBest) { $udpBest.JitterMs } else { $null }
         UdpLoss = if ($udpBest) { $udpBest.LossPercent } else { $null }
+        MaxMTU = $mtuResult.MaxMTU
+        JumboCapable = $mtuResult.JumboCapable
     }
 }
 
@@ -529,6 +560,9 @@ foreach ($r in $fleetResults) {
     $summaryRows += "<td>$($r.UpRetrans) / $($r.DnRetrans)</td>"
     $summaryRows += "<td>$pingStr</td><td>$($r.PingLoss)%</td>"
     $summaryRows += "<td>$udpStr</td><td>$jitStr</td>"
+    $mtuStr = if ($r.MaxMTU) { "$($r.MaxMTU)" } else { "-" }
+    $jumboStr = if ($r.JumboCapable) { "<span style='color:green'>YES</span>" } else { "No" }
+    $summaryRows += "<td>$mtuStr</td><td>$jumboStr</td>"
     $summaryRows += "<td>$($r.Notes)</td><td>$linkStr</td></tr>"
 }
 
@@ -565,7 +599,7 @@ a { color: #2e86c1; }
   <div class="stat"><div class="num">$TechName</div><div class="lbl">Technician</div></div>
 </div>
 <table>
-<tr><th>Name</th><th>Endpoint</th><th>Status</th><th>TCP Up<br/>(Mbps)</th><th>TCP Down<br/>(Mbps)</th><th>Retrans<br/>(Up/Dn)</th><th>Ping<br/>Avg</th><th>Ping<br/>Loss</th><th>UDP<br/>Best</th><th>UDP<br/>Jitter</th><th>Notes</th><th>Report</th></tr>
+<tr><th>Name</th><th>Endpoint</th><th>Status</th><th>TCP Up<br/>(Mbps)</th><th>TCP Down<br/>(Mbps)</th><th>Retrans<br/>(Up/Dn)</th><th>Ping<br/>Avg</th><th>Ping<br/>Loss</th><th>UDP<br/>Best</th><th>UDP<br/>Jitter</th><th>Max<br/>MTU</th><th>Jumbo</th><th>Notes</th><th>Report</th></tr>
 $summaryRows
 </table>
 <div class="ft">RFC2544 Test Suite RFC 2544 Fleet Test v1.0 -- $reportDate -- $env:COMPUTERNAME</div>

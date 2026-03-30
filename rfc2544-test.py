@@ -274,6 +274,15 @@ def build_host_html(host, results, args, report_date):
                          f"<td>{u['jitter_ms']} ms</td><td>{u['lost_packets']}</td>"
                          f"<td>{u['total_packets']}</td><td style='{lc}'>{u['loss_percent']}%</td></tr>")
 
+    mtu = results.get("mtu", {"max_mtu": 1500, "jumbo_capable": False})
+    jumbo_text = ("<span style='color:green;font-weight:bold'>YES - 9000 byte frames supported</span>"
+                  if mtu["jumbo_capable"] else "<span style='color:#666'>No - standard 1500 byte MTU</span>")
+    mtu_section = (f"<h2>MTU / Jumbo Frame Path</h2><table>"
+                   f"<tr><th>Test</th><th>Result</th></tr>"
+                   f"<tr><td>Max MTU (DF bit set)</td><td><strong>{mtu['max_mtu']} bytes</strong></td></tr>"
+                   f"<tr><td>Jumbo Frame Capable</td><td>{jumbo_text}</td></tr>"
+                   f"</table>")
+
     udp_section = ""
     if udp_rows:
         udp_section = (f"<h2>UDP Frame Loss and Jitter</h2><table>"
@@ -312,6 +321,7 @@ def build_host_html(host, results, args, report_date):
 <tr><td>56 byte</td><td>{ps.get('avg_ms', 0)} ms</td><td>{ps.get('min_ms', 0)} ms</td><td>{ps.get('max_ms', 0)} ms</td><td>{ps.get('loss_percent', 100)}%</td><td>{ps.get('count', 0)}/{ps.get('sent', 0)}</td></tr>
 <tr><td>1400 byte (DF)</td><td>{pl.get('avg_ms', 0)} ms</td><td>{pl.get('min_ms', 0)} ms</td><td>{pl.get('max_ms', 0)} ms</td><td>{pl.get('loss_percent', 100)}%</td><td>{pl.get('count', 0)}/{pl.get('sent', 0)}</td></tr>
 </table>
+{mtu_section}
 {udp_section}
 {trace_section}
 <div class="ft">RFC2544 Test Suite -- {report_date} -- {hostname}</div>
@@ -335,12 +345,15 @@ def build_fleet_html(fleet_results, hosts_count, args, report_date, fleet_dir):
         report_path = os.path.join(fleet_dir, r["name"], "report.html")
         link = f"<a href='{r['name']}/report.html'>View</a>" if os.path.exists(report_path) else "-"
 
+        mtu_str = str(r.get("max_mtu", "-")) if r.get("max_mtu") else "-"
+        jumbo_str = "<span style='color:green'>YES</span>" if r.get("jumbo_capable") else "No"
         rows += (f"<tr><td><strong>{escape(r['name'])}</strong></td><td>{r['ip']}:{r['port']}</td>"
                  f"<td style='{sc};font-weight:bold'>{r['status']}</td>"
                  f"<td>{up_str}</td><td>{dn_str}</td>"
                  f"<td>{r.get('up_retrans', 0)} / {r.get('dn_retrans', 0)}</td>"
                  f"<td>{ping_str}</td><td>{r.get('ping_loss', '-')}%</td>"
                  f"<td>{udp_str}</td><td>{jit_str}</td>"
+                 f"<td>{mtu_str}</td><td>{jumbo_str}</td>"
                  f"<td>{escape(r.get('notes', ''))}</td><td>{link}</td></tr>")
 
     return f"""<!DOCTYPE html><html><head><meta charset="utf-8"><style>{REPORT_CSS}</style></head><body>
@@ -358,7 +371,7 @@ def build_fleet_html(fleet_results, hosts_count, args, report_date, fleet_dir):
 <table>
 <tr><th>Name</th><th>Endpoint</th><th>Status</th><th>TCP Up<br/>(Mbps)</th><th>TCP Down<br/>(Mbps)</th>
 <th>Retrans<br/>(Up/Dn)</th><th>Ping<br/>Avg</th><th>Ping<br/>Loss</th><th>UDP<br/>Best</th>
-<th>UDP<br/>Jitter</th><th>Notes</th><th>Report</th></tr>
+<th>UDP<br/>Jitter</th><th>Max<br/>MTU</th><th>Jumbo</th><th>Notes</th><th>Report</th></tr>
 {rows}
 </table>
 <div class="ft">RFC2544 Test Suite Fleet Test v1.0 -- {report_date} -- {hostname}</div>
@@ -524,6 +537,32 @@ Examples:
                 print(f"\r  \033[93m[WARN] Traceroute failed\033[0m        ")
             results["traceroute"] = trace
 
+        # -- MTU / Jumbo Frame Path Discovery --
+        print("  [..] MTU path discovery...", end="", flush=True)
+        mtu_result = {"jumbo_capable": False, "max_mtu": 1500}
+        mtu_sizes = [1472, 2000, 4000, 8000, 8972]
+        system = platform.system()
+        for ms in mtu_sizes:
+            try:
+                if system == "Darwin":
+                    cmd = ["ping", "-c", "1", "-D", "-s", str(ms), "-W", "2000", h_ip]
+                else:
+                    cmd = ["ping", "-c", "1", "-M", "do", "-s", str(ms), "-W", "2", h_ip]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                if r.returncode == 0:
+                    mtu_result["max_mtu"] = ms + 28
+                    if ms >= 8000:
+                        mtu_result["jumbo_capable"] = True
+                else:
+                    break
+            except Exception:
+                break
+        results["mtu"] = mtu_result
+        if mtu_result["jumbo_capable"]:
+            print(f"\r  \033[92m[OK] Jumbo frames supported! Max MTU: {mtu_result['max_mtu']}\033[0m        ")
+        else:
+            print(f"\r  \033[96m[OK] Max MTU: {mtu_result['max_mtu']} (standard)\033[0m        ")
+
         # -- TCP Upload --
         print(f"  [..] TCP Upload ({args.parallel} streams, {args.duration}s)...", end="", flush=True)
         tcp_up = run_iperf3(iperf3, ["-J", "-c", h_ip, "-p", str(h_port),
@@ -553,6 +592,8 @@ Examples:
         udp_best = None
         if not args.skip_udp:
             udp_lens = [64, 256, 512, 1024, 1470]
+            if mtu_result["jumbo_capable"]:
+                udp_lens.append(8972)
             for dlen in udp_lens:
                 print(f"  [..] UDP len={dlen}...", end="", flush=True)
                 udp_run = run_iperf3(iperf3, ["-J", "-u", "-c", h_ip, "-p", str(h_port),
@@ -596,6 +637,8 @@ Examples:
             "udp_best": udp_best["mbps"] if udp_best else None,
             "udp_jitter": udp_best["jitter_ms"] if udp_best else None,
             "udp_loss": udp_best["loss_percent"] if udp_best else None,
+            "max_mtu": mtu_result["max_mtu"],
+            "jumbo_capable": mtu_result["jumbo_capable"],
         })
 
     # -- Fleet summary HTML --
